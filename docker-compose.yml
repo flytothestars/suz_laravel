@@ -1,0 +1,56 @@
+version: '3'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: app-suz-dev
+    restart: unless-stopped
+    user: root
+    volumes:
+      - .:/var/www/html
+      - ./_docker/xdebug.ini:/usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini
+      - ./_docker/error_reporting.ini:/usr/local/etc/php/conf.d/error_reporting.ini
+    networks:
+      - app-network
+
+  db:
+    image: mysql:8.0
+    container_name: db-suz-dev
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: suz_local_db
+      MYSQL_USER: root
+      MYSQL_PASSWORD: secret
+      MYSQL_ROOT_PASSWORD: secret
+    volumes:
+      - dbdata:/var/lib/mysql
+    ports:
+      - "3306:3306"
+    networks:
+      - app-network
+
+  nginx:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    container_name: nginx-suz-dev
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d
+      - ./public:/var/www/html/public
+    depends_on:
+      - app
+    networks:
+      - app-network
+
+volumes:
+  dbdata:
+
+networks:
+  app-network:
+    driver: bridge
+

@@ -1,0 +1,104 @@
+# Define stages of the pipeline
+stages:
+  - build
+  - test
+  - deploy
+
+variables:
+  PHP_IMAGE: php:7.4
+  OS: centos:7.9
+
+# TODO нужно сделать максимально похожие настройки расширений для php как на серваке.
+  # Щас работает потому что на серваке раннера уже есть все, т.к dev сервер там же находиться
+  # Но вообще стоит закоментировать, т.к без прямого не будет доступа для обновлений.
+  # Поставить команды в before_script stage, если нужно будет.
+  # - yum update -y && yum install -y -q epel-release
+  # - yum update -y && yum install -y openssh-clients rsync
+
+before_script:
+  - cp .env.testing .env
+
+# Define jobs for each stage
+build:
+  stage: build
+  image: ${PHP_IMAGE}
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}-build
+    paths:
+      - vendor/
+  script:
+    - |
+      echo "Restoring build cache..."
+      if [ -d "./vendor" ]; then
+        echo "Build cache found, skipping composer install..."
+      else
+        composer install --no-ansi --no-interaction --no-progress --prefer-dist
+      fi
+      php artisan key:generate
+      php artisan config:cache
+      php artisan route:cache
+
+    - |
+      echo "Saving build cache..."
+      mkdir -p ./cache/
+      cp -R ./vendor ./cache/
+
+test:
+  stage: test
+  image: ${PHP_IMAGE}
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}-test
+    paths:
+      - vendor/
+  script:
+    - |
+      echo "Restoring test cache..."
+      if [ -d "./vendor" ]; then
+        echo "Test cache found, skipping composer install..."
+      else
+        composer install --no-ansi --no-interaction --no-progress --prefer-dist
+      fi
+      php artisan config:cache
+      vendor/bin/phpunit
+
+    - |
+      echo "Saving test cache..."
+      mkdir -p ./cache/
+      cp -R ./vendor ./cache/
+
+    - |
+      chmod 777 -R /var/www/suzu-dev/builds/K9_twHAn/0/Davlat/suzu-dev/public/images
+
+deploy:
+  stage: deploy
+  image: ${OS}
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+    - if: '$CI_COMMIT_BRANCH == "dev"'
+      when: always
+    - if: '$CI_COMMIT_BRANCH == "stage"'
+      when: always
+  needs:
+    - build
+    - test
+  environment:
+    name: $CI_COMMIT_REF_SLUG
+  before_script:
+    - "[[ \"$CI_COMMIT_BRANCH\" == \"dev\" ]] && echo \"$SSH_PRIVATE_KEY\" | tr -d '\r' > /root/.ssh/id_rsa || true"
+    - "[[ \"$CI_COMMIT_BRANCH\" == \"stage\" ]] && echo \"$SSH_PRIVATE_KEY\" | tr -d '\r' > /root/.ssh/stage_rsa || true"
+    - "[[ \"$CI_COMMIT_BRANCH\" == \"$CI_DEFAULT_BRANCH\" ]] && echo \"$SSH_PRIVATE_KEY\" | tr -d '\r' > /root/.ssh/master_rsa || true"
+    - chmod 600 /root/.ssh/id_rsa /root/.ssh/stage_rsa /root/.ssh/master_rsa
+    - ssh-keyscan $SERVER_HOST >> /root/.ssh/known_hosts
+  script:
+    - |
+      if [[ "$CI_COMMIT_BRANCH" == "dev" ]]; then
+        rsync -az --delete-after --exclude='.env' --exclude='storage/' --exclude='builds/' -e "ssh -i /root/.ssh/id_rsa" . $SSH_USER@$SERVER_HOST:$SERVER_PATH
+        ssh -i /root/.ssh/id_rsa $SSH_USER@$SERVER_HOST "cd $SERVER_PATH && composer install --no-ansi --no-interaction --no-progress --prefer-dist && php artisan migrate --force"
+      elif [[ "$CI_COMMIT_BRANCH" == "stage" ]]; then
+        rsync -az --delete-after --exclude='.env' --exclude='storage/' --exclude='builds/' -e "ssh -i /root/.ssh/stage_rsa" . $SSH_USER@$SERVER_HOST:$SERVER_PATH
+        ssh -i /root/.ssh/stage_rsa $SSH_USER@$SERVER_HOST "cd $SERVER_PATH && composer install --no-ansi --no-interaction --no-progress --prefer-dist && php artisan migrate --force"
+      elif [[ \"$CI_COMMIT_BRANCH\" == \"$CI_DEFAULT_BRANCH\" ]]; then
+        rsync -az --delete-after --exclude='.env' --exclude='storage/' --exclude='builds/' -e "ssh -i /root/.ssh/master_rsa" . $SSH_USER@$SERVER_HOST:$SERVER_PATH
+        ssh -i /root/.ssh/master_rsa $SSH_USER@$SERVER_HOST "cd $SERVER_PATH && composer install --no-ansi --no-interaction --no-progress --prefer-dist && php artisan migrate --force"
+      fi
